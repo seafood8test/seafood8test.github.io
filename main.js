@@ -4,6 +4,10 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
 let camera, scene, renderer, controls;
 let model;
+let currentSession = null;
+let reticle = null;
+let hitTestSource = null;
+let hitTestSourceRequested = false;
 
 init();
 animate();
@@ -106,12 +110,11 @@ function init() {
 }
 
 function animate() {
-    requestAnimationFrame(animate);
-    
-    // 更新 OrbitControls
-    controls.update();
-    
-    renderer.render(scene, camera);
+    if (!currentSession) {
+        requestAnimationFrame(animate);
+        controls.update();
+        renderer.render(scene, camera);
+    }
 }
 
 // 添加3D瀏覽模式
@@ -134,29 +137,118 @@ async function startAR() {
     }
 
     try {
+        // 請求 AR 會話
         const session = await navigator.xr.requestSession('immersive-ar', {
-            requiredFeatures: ['hit-test']
+            requiredFeatures: ['hit-test', 'dom-overlay'],
+            domOverlay: { root: document.body }
         });
 
-        renderer.xr.setSession(session);
+        // 創建 reticle（用於顯示放置位置）
+        reticle = new THREE.Mesh(
+            new THREE.RingGeometry(0.15, 0.2, 32).rotateX(-Math.PI / 2),
+            new THREE.MeshBasicMaterial()
+        );
+        reticle.visible = false;
+        scene.add(reticle);
+
+        // 設置 session
+        currentSession = session;
+        await renderer.xr.setSession(session);
+
+        // 添加會話事件監聽器
+        session.addEventListener('end', onSessionEnd);
         
-        // 確保模型在AR模式下可見
-        if (model) {
-            model.visible = true;
-        }
-        
-        session.addEventListener('end', () => {
-            renderer.xr.setSession(null);
-            // AR模式結束時重置場景
-            if (model) {
-                model.visible = true; // 保持模型可見
-                start3DView(); // 返回3D視圖
-            }
-        });
+        // 設置 AR 幀循環
+        renderer.setAnimationLoop(onXRFrame);
+
+        // 隱藏按鈕容器
+        document.querySelector('.button-container').style.display = 'none';
+
     } catch (error) {
         console.error('AR 啟動失敗:', error);
         alert('AR啟動失敗。請確保：\n1. 使用支援的設備\n2. 使用最新版Chrome瀏覽器\n3. 已安裝ARCore（Android）或使用WebXR Viewer（iOS）');
     }
+}
+
+// 添加 AR 會話結束處理函數
+function onSessionEnd() {
+    if (currentSession) {
+        currentSession.removeEventListener('end', onSessionEnd);
+        currentSession = null;
+        
+        // 重置 hit test 相關變量
+        hitTestSource = null;
+        hitTestSourceRequested = false;
+        
+        // 移除 reticle
+        if (reticle) {
+            scene.remove(reticle);
+            reticle = null;
+        }
+
+        // 恢復正常渲染循環
+        renderer.setAnimationLoop(animate);
+        
+        // 顯示按鈕容器
+        document.querySelector('.button-container').style.display = 'flex';
+        
+        // 重置場景
+        start3DView();
+    }
+}
+
+// 添加 AR 幀渲染函數
+function onXRFrame(timestamp, frame) {
+    if (!frame) return;
+
+    const referenceSpace = renderer.xr.getReferenceSpace();
+    const session = frame.session;
+
+    // 處理 hit test
+    if (!hitTestSourceRequested) {
+        session.requestReferenceSpace('viewer').then((referenceSpace) => {
+            session.requestHitTestSource({ space: referenceSpace })
+                .then((source) => {
+                    hitTestSource = source;
+                });
+        });
+        hitTestSourceRequested = true;
+    }
+
+    if (hitTestSource) {
+        const hitTestResults = frame.getHitTestResults(hitTestSource);
+        if (hitTestResults.length > 0) {
+            const hit = hitTestResults[0];
+            const pose = hit.getPose(referenceSpace);
+
+            if (reticle) {
+                reticle.visible = true;
+                reticle.position.set(
+                    pose.transform.position.x,
+                    pose.transform.position.y,
+                    pose.transform.position.z
+                );
+                reticle.updateMatrixWorld(true);
+            }
+
+            // 如果模型存在，更新其位置
+            if (model) {
+                model.position.set(
+                    pose.transform.position.x,
+                    pose.transform.position.y,
+                    pose.transform.position.z
+                );
+                model.updateMatrixWorld(true);
+            }
+        } else {
+            if (reticle) {
+                reticle.visible = false;
+            }
+        }
+    }
+
+    // 渲染場景
+    renderer.render(scene, camera);
 }
 
 // 響應視窗大小變化
