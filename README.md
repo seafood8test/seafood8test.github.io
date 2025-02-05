@@ -8,4 +8,4 @@ This is a WebXR demonstration using Three.js.
 - HTTPS connection
 
 ## Usage
-Visit: https://your-username.github.io/your-repo-name/ 
+Visit: https://seafood8test.github.io/
